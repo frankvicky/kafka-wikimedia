@@ -34,6 +34,11 @@ private fun buildKafkaProducer(): KafkaProducer<String, String> {
 //        setProperty(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true")
 //        setProperty(ProducerConfig.ACKS_CONFIG, "all")
 //        setProperty(ProducerConfig.RETRIES_CONFIG, Int.MAX_VALUE.toString())
+
+        // set high throughput producer configs
+        setProperty(ProducerConfig.LINGER_MS_CONFIG, "20")
+        setProperty(ProducerConfig.BATCH_SIZE_CONFIG, (32 * 1024).toString())
+        setProperty(ProducerConfig.COMPRESSION_TYPE_CONFIG, "snappy")
     }
 
     return KafkaProducer(properties)
