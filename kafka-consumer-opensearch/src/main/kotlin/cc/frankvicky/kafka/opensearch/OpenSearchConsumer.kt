@@ -8,6 +8,7 @@ import org.apache.http.impl.client.BasicCredentialsProvider
 import org.apache.http.impl.client.DefaultConnectionKeepAliveStrategy
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.consumer.ConsumerConfig
+import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.consumer.KafkaConsumer
 import org.apache.kafka.common.errors.WakeupException
 import org.apache.kafka.common.serialization.StringDeserializer
@@ -24,27 +25,22 @@ import java.net.URI
 import java.time.Duration
 import java.util.*
 
+
+private val log = LoggerFactory.getLogger(OpenSearchConsumer::class.java.simpleName)
+
 class OpenSearchConsumer
 
 fun main() {
-
-    val log = LoggerFactory.getLogger(OpenSearchConsumer::class.java.simpleName)
     // create an OpenSearch Client
     val openSearchClient = createOpenSearchClient()
 
     // create our Kafka Client
-    val consumer = createKafkaConsumer().also { it.subscribe(listOf("wikimedia.recentchange")) }
+    val consumer = createKafkaConsumer()
+        .also { it.subscribe(listOf("wikimedia.recentchange")) }
 
     try {
-
         openSearchClient.use { client ->
-            val indexExisted = client.indices()
-                .exists(GetIndexRequest("wikimedia"), RequestOptions.DEFAULT)
-
-            if (!indexExisted) {
-                client.indices().create(CreateIndexRequest("wikimedia"), RequestOptions.DEFAULT)
-                log.info("hello")
-            } else log.info("Index already exists")
+            createIndex(client)
 
             consumer.use { consumer ->
                 while (true) {
@@ -52,23 +48,9 @@ fun main() {
                     log.info("Received ${records.count()} record(s)")
 
                     val bulkRequest = BulkRequest()
+                    records.forEach { record -> bulkRequest.addRecord(record) }
 
-                    records.forEach { record ->
-                        IndexRequest("wikimedia")
-                            .source(record.value(), XContentType.JSON)
-                            .id(extractId(record.value()))
-                            .let { bulkRequest.add(it) }
-                    }
-
-                    if (bulkRequest.numberOfActions() > 0) {
-                        val bulkResponse = openSearchClient.bulk(bulkRequest, RequestOptions.DEFAULT)
-                        log.info("Inserted ${bulkResponse.items.size} record(s)")
-
-                        Thread.sleep(1000)
-
-                        consumer.commitSync()
-                        log.info("Offsets have been committed")
-                    }
+                    sendBulkRequest(bulkRequest, openSearchClient, consumer)
                 }
             }
         }
@@ -79,6 +61,16 @@ fun main() {
         openSearchClient.close()
         log.info("The consumer is now gracefully shut down")
     }
+}
+
+private fun createIndex(client: RestHighLevelClient) {
+    val indexExisted = client.indices()
+        .exists(GetIndexRequest("wikimedia"), RequestOptions.DEFAULT)
+
+    if (!indexExisted)
+        client.indices().create(CreateIndexRequest("wikimedia"), RequestOptions.DEFAULT)
+    else
+        log.info("Index already exists")
 }
 
 private fun createOpenSearchClient(): RestHighLevelClient {
@@ -124,6 +116,30 @@ private fun createKafkaConsumer(): KafkaConsumer<String, String> {
     return KafkaConsumer(properties)
 }
 
+private fun sendBulkRequest(
+    bulkRequest: BulkRequest,
+    openSearchClient: RestHighLevelClient,
+    consumer: KafkaConsumer<String, String>
+) {
+    if (bulkRequest.numberOfActions() > 0) {
+        val bulkResponse = openSearchClient.bulk(bulkRequest, RequestOptions.DEFAULT)
+        log.info("Inserted ${bulkResponse.items.size} record(s)")
+
+        Thread.sleep(1000)
+
+        consumer.commitSync()
+        log.info("Offsets have been committed")
+    }
+}
+
+private fun BulkRequest.addRecord(
+    record: ConsumerRecord<String, String>
+) {
+    IndexRequest("wikimedia")
+        .source(record.value(), XContentType.JSON)
+        .id(extractId(record.value()))
+        .let { add(it) }
+}
 
 private fun extractId(json: String): String =
     JsonParser.parseString(json)
